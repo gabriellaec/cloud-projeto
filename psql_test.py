@@ -4,7 +4,7 @@ import sys
 import boto3
 import os
 
-ENDPOINT="ec2-3-16-40-101.us-east-2.compute.amazonaws.com"
+ENDPOINT="ec2-3-144-1-143.us-east-2.compute.amazonaws.com"
 PORT="5432"
 USR="cloud"
 REGION="us-east-2"
@@ -39,6 +39,6 @@ except Exception as e:
 
 # https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/UsingWithRDS.IAMDBAuth.Connecting.Python.html
 
-# ssh -i /home/gabi/Documents/ec2-key-pair-projeto1-gabi.pem ubuntu@3.16.40.101
+# ssh -i /home/gabi/Documents/ec2-key-pair-projeto1-gabi.pem ubuntu@18.222.206.143
 # nano postgres-script.sh
 # chmod u+x postgres-script.sh
