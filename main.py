@@ -20,7 +20,7 @@ KEY_NAME_NV = "ec2-key-pair-projeto1-gabi2"
 AMI_UBUNTU_LTS_OHIO = "ami-020db2c14939a8efb"
 AMI_UBUNTU_LTS_NVIR = "ami-0279c3b3186e54acd"
 INSTANCE_TYPE = "t2.micro"
-AMI_NV = "image_client_NV"
+AMI_NV = "image_client_N_Virginia"
 TAG_KEY = "instance-proj"
 TAG_VAL_OHIO = "OhioPsql"
 TAG_VAL_NVIR = "NorthVirginia"
@@ -35,27 +35,13 @@ SECURITY_GROUP_DESCRIPTION_NVIR = "Security Group para a instancia de North Virg
 
 
 # ********** boto3 CLIENT & RESOURCES ********** #
-client_NVIRGINIA = boto3.client('ec2', region_name='us-east-1')
-client_OHIO = boto3.client('ec2', region_name='us-east-2')
+NORTH_VIRGINIA='us-east-1'
+OHIO='us-east-2'
+client_NVIRGINIA = boto3.client('ec2', region_name=NORTH_VIRGINIA)
+client_OHIO = boto3.client('ec2', region_name=OHIO)
 
 resource_OHIO = boto3.resource('ec2', region_name='us-east-2')
 resource_NVIRGINIA = boto3.resource('ec2', region_name='us-east-1')
-
-
-# ********** USER DATA ********** #
-
-
-
-# ohio_instance_ip=0
-# USER_DATA_ORM = f'''#!/bin/bash
-# git clone https://github.com/gabriellaec/tasks.git
-# sed -i "s/'USER': 'cloud'/'USER': '{secrets.username}'/g" /tasks/portfolio/settings.py
-# sed -i "s/'PASSWORD': 'cloud'/'PASSWORD': '{secrets.password}'/g" /tasks/portfolio/settings.py
-# sed -i "s/'HOST': 'node1'/'HOST': '{ohio_instance_ip}/g" /tasks/portfolio/settings.py
-# cd tasks
-# ./install.sh 
-# sudo reboot
-# '''
 
 
 #***************************************************#
@@ -117,9 +103,9 @@ def create_instance(client, ami, instance_type, key_name, user_data, security_gr
     print(f"Tag com chave={tag_key} e valor={tag_val} adicionada com sucesso à instância {instance_id}")
 
     return instance_id
-# Para esperar a instancia estar rodando:
-# https://newbedev.com/ec2-waiting-until-a-new-instance-is-in-running-state
 
+
+#  Função que deleta uma instância  #
 def terminate_instance(ec2_client, ec2_resource, instance_id):
 
     instance = ec2_resource.Instance(instance_id)
@@ -133,11 +119,32 @@ def terminate_instance(ec2_client, ec2_resource, instance_id):
         print(f"Nenhuma instância com id={instance_id} rodando!")
 
 
-def create_image(ec2_client, instance_id, name):
-    ec2_client.create_image(InstanceId=instance_id, NoReboot=True, Name=name)
+
+#  Função que cria uma AMI #
+def create_image(ec2_client, resource_ec2, instance_id, name):
+    try:
+        print(f"Criando imagem {name}...")
+        image = ec2_client.create_image(InstanceId=instance_id, NoReboot=True, Name=name)
+    
+        print(f"\n {image} \n")
+    except ClientError:
+        print(f"Imagem {name} já existe\n")
+        response = ec2_client.describe_images(Filters=[
+        {'Name': 'name',
+         'Values': [name]}])
+
+        ami_id = response['Images'][0]['ImageId']
+        print(f"ID da AMI: {ami_id}")
+
+        print("Deletando imagem...\n")
+        ami = list(resource_ec2.images.filter(ImageIds=[ami_id]).all())[0]
+        ami.deregister(DryRun=False)       
+        
+        create_image(ec2_client, resource_ec2, instance_id, name)
+        # ec2_client.create_image(InstanceId=instance_id, NoReboot=True, Name=name)
 
 
-# https://boto3.amazonaws.com/v1/documentation/api/1.9.42/guide/ec2-example-security-group.html
+#  Função que cria um Security Group #
 def create_security_group(client_ec2, security_gp_name, description):
     print("Criando Security Group")
     try:
@@ -178,7 +185,6 @@ def create_security_group(client_ec2, security_gp_name, description):
 
 
 
-##### https://dashbird.io/blog/boto3-aws-python/
 def get_instance_id_by_tag(client_ec2, tag_val):
         filter = [{
             'Name': 'tag:instance-proj', 
@@ -190,6 +196,7 @@ def get_instance_id_by_tag(client_ec2, tag_val):
             return instanceid
 
 
+# Função que pega o IP de uma instância pelo ID
 def get_ip_by_id(resource_ec2, instance_id):
     
     running_instances = resource_ec2.instances.filter(Filters=[{
@@ -203,8 +210,6 @@ def get_ip_by_id(resource_ec2, instance_id):
             print(f"Instância com id={instance_id} possui o ip={ip}\n")
             return ip
 
-
-    
 
 
 #**************************************************#
@@ -246,10 +251,12 @@ sudo systemctl restart postgresql
 
 instance_OHIO_id = create_instance(client_OHIO, AMI_UBUNTU_LTS_OHIO, INSTANCE_TYPE, KEY_NAME, USER_DATA_POSTGRES, SECURITY_GROUP_NAME_OHIO, TAG_KEY, TAG_VAL_OHIO)
 
-instance = resource_OHIO.Instance(id=instance_OHIO_id)
+# instance = resource_OHIO.Instance(id=instance_OHIO_id)
 print("Esperando a instância estar rodando...")
-instance.wait_until_running()
+# instance.wait_until_running()
 
+# waiter_status_ok = client_OHIO.get_waiter("instance_status_ok")
+# waiter_status_ok.wait(InstanceIds=[ instance_OHIO_id])
 # --------------- Criando a instância de NORTH VIRGINIA --------------- #
 print()
 print("------------- NORTH VIRGINIA -------------")
@@ -263,41 +270,25 @@ create_security_group(client_NVIRGINIA, SECURITY_GROUP_NAME_NVIR, SECURITY_GROUP
 print()
 
 instance_OHIO_ip = get_ip_by_id(resource_OHIO, instance_OHIO_id)
+print(f"ip Ohio: {instance_OHIO_ip}")
 USER_DATA_ORM=f'''#!/bin/bash
-git clone https://github.com/gabriellaec/tasks.git
-sed -i "s/'HOST': 'node1'/'HOST': '{instance_OHIO_ip}'/g" tasks/portfolio/settings.py
 sudo apt update -y
-sudo apt-get install python3-pip -y
-pip3 install django
+cd /home/ubuntu
+git clone https://github.com/gabriellaec/tasks.git
+sudo sed -i "s/'HOST': 'node1'/'HOST': '{instance_OHIO_ip}'/g" tasks/portfolio/settings.py
 cd tasks
 ./install.sh 
 sudo reboot
         '''
-##### TESTEEE
-# print()
-# print("* CRIANDO A NORTH VIRGINIA")
-# print("** Parâmetros")
-# print("AMI_UBUNTU_LTS_NVIR: ", AMI_UBUNTU_LTS_NVIR)
-# print("INSTANCE_TYPE: ", INSTANCE_TYPE)
-# print("KEY_NAME: ", KEY_NAME)
-# print("USER_DATA_ORM: ", USER_DATA_ORM)
-# print("SECURITY_GROUP_NAME_OHIO: ", SECURITY_GROUP_NAME_OHIO)
-# print("TAG_KEY: ", TAG_KEY)
-# print("TAG_VAL_NVIR: ", TAG_VAL_NVIR)
-# print()
 
 instance_NVIRGINIA_id = create_instance(client_NVIRGINIA, AMI_UBUNTU_LTS_NVIR, INSTANCE_TYPE, KEY_NAME_NV, USER_DATA_ORM, SECURITY_GROUP_NAME_NVIR, TAG_KEY, TAG_VAL_NVIR)
 instance = resource_NVIRGINIA.Instance(id=instance_NVIRGINIA_id)
 print("Esperando a instância estar rodando...")
 instance.wait_until_running()
 
-# INSTALAR O ORM --> MUDAR SCRIPT DO DJANGO
-
-
-
-# 6
-# create_image(client_NVIRGINIA, instance_NVIRGINIA_id, AMI_NV)
-# terminate_instance(client_NVIRGINIA, instance_NVIRGINIA_id)
+# delete_ami_if_exists(client_NVIRGINIA, resource_NVIRGINIA, AMI_NV)
+create_image(client_NVIRGINIA, resource_NVIRGINIA, instance_NVIRGINIA_id, AMI_NV)
+terminate_instance(client_NVIRGINIA, resource_NVIRGINIA, instance_NVIRGINIA_id)
 
 
 #### LOAD BALANCER
@@ -316,5 +307,10 @@ https://www.postgresql.org/docs/12/sql-createuser.html
 https://stackoverflow.com/questions/18223665/postgresql-query-from-bash-script-as-database-user-postgres
 https://www.cyberciti.biz/faq/linux-append-text-to-end-of-file/
 https://docs.aws.amazon.com/pt_br/AWSEC2/latest/UserGuide/user-data.html
+
+https://stackoverflow.com/questions/10437026/using-boto-to-determine-if-an-aws-ami-is-available
+ https://newbedev.com/ec2-waiting-until-a-new-instance-is-in-running-state
+https://boto3.amazonaws.com/v1/documentation/api/1.9.42/guide/ec2-example-security-group.html
+https://dashbird.io/blog/boto3-aws-python/
 '''
 
