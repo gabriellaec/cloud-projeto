@@ -17,14 +17,20 @@ KEY_NAME_NV = "ec2-key-pair-projeto1-gabi2"
 
 
 # ********** CONFIGURAÇÕES DAS INSTÂNCIAS ********** #
+INSTANCE_TYPE = "t2.micro"
+
+## AMIs
 AMI_UBUNTU_LTS_OHIO = "ami-020db2c14939a8efb"
 AMI_UBUNTU_LTS_NVIR = "ami-0279c3b3186e54acd"
-INSTANCE_TYPE = "t2.micro"
 AMI_NV = "image_client_N_Virginia"
+
+## Tags
 TAG_KEY = "instance-proj"
 TAG_VAL_OHIO = "OhioPsql"
 TAG_VAL_NVIR = "NorthVirginia"
 
+## Load Balancer
+LB_NAME = "Load Balancer ORMs"
 
 # ********** CONFIGURAÇÕES DO SECURITY GROUP ********** #
 SECURITY_GROUP_NAME_OHIO = "SecurityGroupOhio"
@@ -44,6 +50,13 @@ resource_OHIO = boto3.resource('ec2', region_name='us-east-2')
 resource_NVIRGINIA = boto3.resource('ec2', region_name='us-east-1')
 
 
+# elb_NVIRGINIA = boto3.ec2.elb.connect_to_region(NORTH_VIRGINIA)
+# hc_NVIR = elb_NVIRGINIA.HealthCheck(
+#         interval=20,
+#         healthy_threshold=3,
+#         unhealthy_threshold=5,
+#         target='HTTP:8080/health'
+#     )
 #***************************************************#
 # ******************** FUNÇÕES ******************** #
 #***************************************************#
@@ -186,22 +199,28 @@ def create_security_group(client_ec2, security_gp_name, description):
 
 
 def get_instance_id_by_tag(client_ec2, tag_val):
-        filter = [{
-            'Name': 'tag:instance-proj', 
-            'Values': [tag_val]}]
-            
+        filter = [
+            {'Name': 'tag:instance-proj', 
+            'Values': [tag_val]},
+            {'Name': 'instance-state-name', 
+            'Values': ['running']
+            }]    
+
+        ids=[]
         response = client_ec2.describe_instances(Filters=filter)
-        if response is not None:
-            instanceid = response["Reservations"][0]['Instances'][0]['InstanceId']
-            return instanceid
+        for reservation in response["Reservations"]:
+                instanceid = reservation['Instances'][0]['InstanceId']
+                ids.append(instanceid)
+        return ids
 
 
 # Função que pega o IP de uma instância pelo ID
 def get_ip_by_id(resource_ec2, instance_id):
     
-    running_instances = resource_ec2.instances.filter(Filters=[{
-    'Name': 'instance-state-name',
-    'Values': ['pending', 'running']}])
+    running_instances = resource_ec2.instances.filter(Filters=[
+    {'Name': 'instance-state-name',
+    'Values': ['pending', 'running']}
+    ])
 
     print("Buscando ip da instância...")
     for instance in running_instances:
@@ -209,6 +228,13 @@ def get_ip_by_id(resource_ec2, instance_id):
             ip=instance.public_ip_address
             print(f"Instância com id={instance_id} possui o ip={ip}\n")
             return ip
+
+
+# def create_lb(elb_NVIRGINIA, name, hc):
+#     zones = ['us-east-1a', 'us-east-1b']
+#     ports = [(80, 8080, 'http'), (443, 8443, 'tcp')]
+#     lb = elb_NVIRGINIA.create_load_balancer(name, zones, ports)
+#     lb.configure_health_check(hc)
 
 
 
@@ -233,11 +259,6 @@ print()
 
 print("* CRIANDO A INSTÂNCIA DE OHIO")
 
-# old_ohio_id = get_instance_id_by_tag(client_OHIO, TAG_VAL_OHIO)
-# if old_ohio_id is not None:
-#     print(f"id da instância antiga: {old_ohio_id}")
-#     terminate_instance(client_OHIO, resource_OHIO, old_ohio_id)
-
 USER_DATA_POSTGRES=f'''#!/bin/bash
 sudo apt update
 sudo apt install postgresql postgresql-contrib -y
@@ -248,12 +269,30 @@ sudo sh -c 'echo "host    all             all             0.0.0.0/0             
 sudo ufw allow 5432/tcp 
 sudo systemctl restart postgresql 
 '''
+###########
+print("Deletando instâncias antigas existentes...\n")
+old_ohio_id = get_instance_id_by_tag(client_OHIO, TAG_VAL_OHIO)
+print(f"ID da instância antiga: {old_ohio_id}")
+if old_ohio_id:
+    for inst_id in old_ohio_id:
+        terminate_instance(client_OHIO, resource_OHIO, inst_id)
+
+########
+
+    # waiter_terminated = client_OHIO.get_waiter('instance_terminated')
+    # old_ohio_id = waiter_terminated.wait(InstanceIds=['i-0974da9ff5318c395'])
+
+
+# if old_ohio_id is not None:
+#     print(f"id da instância antiga: {old_ohio_id}")
+#     terminate_instance(client_OHIO, resource_OHIO, old_ohio_id)
+
 
 instance_OHIO_id = create_instance(client_OHIO, AMI_UBUNTU_LTS_OHIO, INSTANCE_TYPE, KEY_NAME, USER_DATA_POSTGRES, SECURITY_GROUP_NAME_OHIO, TAG_KEY, TAG_VAL_OHIO)
 
-# instance = resource_OHIO.Instance(id=instance_OHIO_id)
+instance = resource_OHIO.Instance(id=instance_OHIO_id)
 print("Esperando a instância estar rodando...")
-# instance.wait_until_running()
+instance.wait_until_running()
 
 # waiter_status_ok = client_OHIO.get_waiter("instance_status_ok")
 # waiter_status_ok.wait(InstanceIds=[ instance_OHIO_id])
@@ -280,6 +319,16 @@ cd tasks
 ./install.sh 
 sudo reboot
         '''
+    
+######
+print("Deletando instâncias antigas existentes...\n")
+old_NV_id = get_instance_id_by_tag(client_NVIRGINIA, TAG_VAL_NVIR)
+print(f"ID da instância antiga: {old_NV_id}")
+if old_NV_id:
+    for inst_id in old_NV_id:
+        terminate_instance(client_NVIRGINIA, resource_NVIRGINIA, inst_id)
+##########
+
 
 instance_NVIRGINIA_id = create_instance(client_NVIRGINIA, AMI_UBUNTU_LTS_NVIR, INSTANCE_TYPE, KEY_NAME_NV, USER_DATA_ORM, SECURITY_GROUP_NAME_NVIR, TAG_KEY, TAG_VAL_NVIR)
 instance = resource_NVIRGINIA.Instance(id=instance_NVIRGINIA_id)
@@ -287,8 +336,8 @@ print("Esperando a instância estar rodando...")
 instance.wait_until_running()
 
 # delete_ami_if_exists(client_NVIRGINIA, resource_NVIRGINIA, AMI_NV)
-create_image(client_NVIRGINIA, resource_NVIRGINIA, instance_NVIRGINIA_id, AMI_NV)
-terminate_instance(client_NVIRGINIA, resource_NVIRGINIA, instance_NVIRGINIA_id)
+# create_image(client_NVIRGINIA, resource_NVIRGINIA, instance_NVIRGINIA_id, AMI_NV)
+# terminate_instance(client_NVIRGINIA, resource_NVIRGINIA, instance_NVIRGINIA_id)
 
 
 #### LOAD BALANCER
