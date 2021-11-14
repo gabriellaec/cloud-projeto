@@ -41,16 +41,17 @@ SECURITY_GROUP_DESCRIPTION_NVIR = "Security Group para a instancia de North Virg
 
 
 # ********** boto3 CLIENT & RESOURCES ********** #
-NORTH_VIRGINIA='us-east-1'
 OHIO='us-east-2'
-client_NVIRGINIA = boto3.client('ec2', region_name=NORTH_VIRGINIA)
+NORTH_VIRGINIA='us-east-1'
+
 client_OHIO = boto3.client('ec2', region_name=OHIO)
+client_NVIRGINIA = boto3.client('ec2', region_name=NORTH_VIRGINIA)
 
 resource_OHIO = boto3.resource('ec2', region_name='us-east-2')
 resource_NVIRGINIA = boto3.resource('ec2', region_name='us-east-1')
 
 
-# elb_NVIRGINIA = boto3.ec2.elb.connect_to_region(NORTH_VIRGINIA)
+# client_lb = boto3.client('elbv2', region_name=NORTH_VIRGINIA)
 # hc_NVIR = elb_NVIRGINIA.HealthCheck(
 #         interval=20,
 #         healthy_threshold=3,
@@ -88,49 +89,25 @@ def create_instance(client, ami, instance_type, key_name, user_data, security_gr
         SecurityGroups=[security_group],
         TagSpecifications=[
         {   'ResourceType': 'instance',
-            'Tags': [
-                {
+            'Tags': [{
                     'Key': tag_key,
-                    'Value': tag_val
-                },
-            ]
-        },
-    ]
+                    'Value': tag_val}]}]
     )
     instance = instances["Instances"][0]
-    # print("Criando a instância...")
-    # instance.wait_until_running()
-    # instance_state = instances["Instances"][0]["State"]["Name"]
-    # print(instance_state)
-    
-    # print("Criando a instância...")
-    # while instance_state != 'running':
-    #    print(f"Instância está {instance_state}...")
-    #    time.sleep(10)
-    #    instance.update()
-    #    instance_state = instances["Instances"][0]["State"]["Name"]
-
     instance_id = instance["InstanceId"]
-
     print(f'Instância com id={instance_id} criada com sucesso')
-    print(f"Tag com chave={tag_key} e valor={tag_val} adicionada com sucesso à instância {instance_id}")
-
+    print(f"Tag com chave={tag_key} e valor={tag_val} adicionada com sucesso à instância {instance_id}\n")
     return instance_id
 
 
 #  Função que deleta uma instância  #
 def terminate_instance(ec2_client, ec2_resource, instance_id):
-
     instance = ec2_resource.Instance(instance_id)
     if instance.state['Name'] == 'running':
-        response = ec2_client.terminate_instances(InstanceIds=[instance_id])
-
-        print("Apagando instância...")
-        print()
-        print(response)
+        ec2_client.terminate_instances(InstanceIds=[instance_id])
+        print(f"Apagando instância de id={instance_id}...")
     else:
         print(f"Nenhuma instância com id={instance_id} rodando!")
-
 
 
 #  Função que cria uma AMI #
@@ -138,23 +115,18 @@ def create_image(ec2_client, resource_ec2, instance_id, name):
     try:
         print(f"Criando imagem {name}...")
         image = ec2_client.create_image(InstanceId=instance_id, NoReboot=True, Name=name)
-    
         print(f"\n {image} \n")
     except ClientError:
         print(f"Imagem {name} já existe\n")
         response = ec2_client.describe_images(Filters=[
         {'Name': 'name',
          'Values': [name]}])
-
         ami_id = response['Images'][0]['ImageId']
         print(f"ID da AMI: {ami_id}")
-
         print("Deletando imagem...\n")
         ami = list(resource_ec2.images.filter(ImageIds=[ami_id]).all())[0]
         ami.deregister(DryRun=False)       
-        
         create_image(ec2_client, resource_ec2, instance_id, name)
-        # ec2_client.create_image(InstanceId=instance_id, NoReboot=True, Name=name)
 
 
 #  Função que cria um Security Group #
@@ -167,8 +139,7 @@ def create_security_group(client_ec2, security_gp_name, description):
                                             Description=description,
                                             VpcId=vpc_id)
         security_group_id = response['GroupId']
-        print('Security Group criado %s na vpc %s.' % (security_group_id, vpc_id))
-        
+        print(f'Security Group {security_group_id} criado na vpc {vpc_id}')
         data = client_ec2.authorize_security_group_ingress(
             GroupId=security_group_id,
             IpPermissions=[
@@ -193,9 +164,8 @@ def create_security_group(client_ec2, security_gp_name, description):
                 'IpRanges': [{'CidrIp': '0.0.0.0/0'}]}
             ])
         print('Security Group criado com sucesso com as seguintes infotmações:\n%s\n' % data)
-    except ClientError as e:
+    except ClientError:
         print("Security Group já existe!")
-
 
 
 def get_instance_id_by_tag(client_ec2, tag_val):
@@ -205,7 +175,6 @@ def get_instance_id_by_tag(client_ec2, tag_val):
             {'Name': 'instance-state-name', 
             'Values': ['running']
             }]    
-
         ids=[]
         response = client_ec2.describe_instances(Filters=filter)
         for reservation in response["Reservations"]:
@@ -216,12 +185,10 @@ def get_instance_id_by_tag(client_ec2, tag_val):
 
 # Função que pega o IP de uma instância pelo ID
 def get_ip_by_id(resource_ec2, instance_id):
-    
     running_instances = resource_ec2.instances.filter(Filters=[
     {'Name': 'instance-state-name',
     'Values': ['pending', 'running']}
     ])
-
     print("Buscando ip da instância...")
     for instance in running_instances:
         if instance.id==instance_id:
@@ -230,11 +197,17 @@ def get_ip_by_id(resource_ec2, instance_id):
             return ip
 
 
-# def create_lb(elb_NVIRGINIA, name, hc):
-#     zones = ['us-east-1a', 'us-east-1b']
-#     ports = [(80, 8080, 'http'), (443, 8443, 'tcp')]
-#     lb = elb_NVIRGINIA.create_load_balancer(name, zones, ports)
-#     lb.configure_health_check(hc)
+def create_lb(elb_NVIRGINIA, name, security_gp, tag_key, tag_val):
+    subnets = []
+    elb_NVIRGINIA.create_load_balancer(
+        Name=name, 
+        Subnets=subnets,
+        SecurityGroups=[security_gp],
+        Tags=[
+        {   'Key': tag_key,
+            'Value': tag_val}],
+        Type='application'
+        )
 
 
 
@@ -248,7 +221,6 @@ print("----------------------------------------")
 print()
 print("----------------- OHIO -----------------")
 
-
 print("* CRIANDO UM KEY PAIR PARA OHIO")
 create_key_pair(client_OHIO, KEY_DIR, KEY_NAME)
 print()
@@ -257,8 +229,9 @@ print("* CRIANDO UM SECURITY GROUP PARA OHIO")
 create_security_group(client_OHIO, SECURITY_GROUP_NAME_OHIO, SECURITY_GROUP_DESCRIPTION_OHIO)
 print()
 
-print("* CRIANDO A INSTÂNCIA DE OHIO")
+print("* INSTÂNCIA DE OHIO")
 
+# --------------- UserData OHIO --------------- #
 USER_DATA_POSTGRES=f'''#!/bin/bash
 sudo apt update
 sudo apt install postgresql postgresql-contrib -y
@@ -269,7 +242,8 @@ sudo sh -c 'echo "host    all             all             0.0.0.0/0             
 sudo ufw allow 5432/tcp 
 sudo systemctl restart postgresql 
 '''
-###########
+
+# ----- Apagando instância se já existe ----- #
 print("Deletando instâncias antigas existentes...\n")
 old_ohio_id = get_instance_id_by_tag(client_OHIO, TAG_VAL_OHIO)
 print(f"ID da instância antiga: {old_ohio_id}")
@@ -277,26 +251,16 @@ if old_ohio_id:
     for inst_id in old_ohio_id:
         terminate_instance(client_OHIO, resource_OHIO, inst_id)
 
-########
-
-    # waiter_terminated = client_OHIO.get_waiter('instance_terminated')
-    # old_ohio_id = waiter_terminated.wait(InstanceIds=['i-0974da9ff5318c395'])
-
-
-# if old_ohio_id is not None:
-#     print(f"id da instância antiga: {old_ohio_id}")
-#     terminate_instance(client_OHIO, resource_OHIO, old_ohio_id)
-
-
+# ----- Criando instância ----- #
+print("Criando instância de OHIO...\n")
 instance_OHIO_id = create_instance(client_OHIO, AMI_UBUNTU_LTS_OHIO, INSTANCE_TYPE, KEY_NAME, USER_DATA_POSTGRES, SECURITY_GROUP_NAME_OHIO, TAG_KEY, TAG_VAL_OHIO)
 
 instance = resource_OHIO.Instance(id=instance_OHIO_id)
 print("Esperando a instância estar rodando...")
 instance.wait_until_running()
 
-# waiter_status_ok = client_OHIO.get_waiter("instance_status_ok")
-# waiter_status_ok.wait(InstanceIds=[ instance_OHIO_id])
-# --------------- Criando a instância de NORTH VIRGINIA --------------- #
+
+# --------------- Instância de NORTH VIRGINIA --------------- #
 print()
 print("------------- NORTH VIRGINIA -------------")
 print()
@@ -308,8 +272,10 @@ print("* CRIANDO UM SECURITY GROUP PARA NORTH VIRGINIA")
 create_security_group(client_NVIRGINIA, SECURITY_GROUP_NAME_NVIR, SECURITY_GROUP_DESCRIPTION_NVIR)
 print()
 
+# --------------- UserData NORTH VIRGINIA --------------- #
 instance_OHIO_ip = get_ip_by_id(resource_OHIO, instance_OHIO_id)
 print(f"ip Ohio: {instance_OHIO_ip}")
+
 USER_DATA_ORM=f'''#!/bin/bash
 sudo apt update -y
 cd /home/ubuntu
@@ -319,21 +285,22 @@ cd tasks
 ./install.sh 
 sudo reboot
         '''
-    
-######
+
+# ----- Apagando instância se já existe ----- #
+print("* INSTÂNCIA DE NORTH VIRGINIA")
 print("Deletando instâncias antigas existentes...\n")
 old_NV_id = get_instance_id_by_tag(client_NVIRGINIA, TAG_VAL_NVIR)
 print(f"ID da instância antiga: {old_NV_id}")
 if old_NV_id:
     for inst_id in old_NV_id:
         terminate_instance(client_NVIRGINIA, resource_NVIRGINIA, inst_id)
-##########
 
-
+# ----- Criando instância ----- #
 instance_NVIRGINIA_id = create_instance(client_NVIRGINIA, AMI_UBUNTU_LTS_NVIR, INSTANCE_TYPE, KEY_NAME_NV, USER_DATA_ORM, SECURITY_GROUP_NAME_NVIR, TAG_KEY, TAG_VAL_NVIR)
 instance = resource_NVIRGINIA.Instance(id=instance_NVIRGINIA_id)
 print("Esperando a instância estar rodando...")
 instance.wait_until_running()
+
 
 # delete_ami_if_exists(client_NVIRGINIA, resource_NVIRGINIA, AMI_NV)
 # create_image(client_NVIRGINIA, resource_NVIRGINIA, instance_NVIRGINIA_id, AMI_NV)
