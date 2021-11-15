@@ -3,17 +3,24 @@ from boto3.session import Session
 import os
 from botocore.errorfactory import ClientError
 import secrets
-import time
 
-#session = Session(region_name='us-east-1')
+
 ############################################ Precisa mudar o dir
 
 # ********** CHAVES ********** #
-KEY_DIR = "/home/gabi/Documents/ec2-key-pair-projeto1-gabi.pem"
-KEY_NAME = "ec2-key-pair-projeto1-gabi"
+KEY_DIR = "/home/gabi/Documents/eec2-key-pair-proj.pem"
+KEY_NAME = "ec2-key-pair-proj"
 
-KEY_DIR_NV = "/home/gabi/Documents/ec2-key-pair-projeto1-gabi2.pem"
-KEY_NAME_NV = "ec2-key-pair-projeto1-gabi2"
+KEY_DIR_NV = "/home/gabi/Documents/ec2-key-pair-proj2.pem"
+KEY_NAME_NV = "ec2-key-pair-proj2"
+
+
+# ********** CONFIGURAÇÕES DO SECURITY GROUP ********** #
+SECURITY_GROUP_NAME_OHIO = "SecurityGroupOhio"
+SECURITY_GROUP_DESCRIPTION_OHIO = "Security Group para a instancia de Ohio"
+
+SECURITY_GROUP_NAME_NVIR = "SecurityGroupNVir"
+SECURITY_GROUP_DESCRIPTION_NVIR = "Security Group para a instancia de North Virginia"
 
 
 # ********** CONFIGURAÇÕES DAS INSTÂNCIAS ********** #
@@ -29,15 +36,16 @@ TAG_KEY = "instance-proj"
 TAG_VAL_OHIO = "OhioPsql"
 TAG_VAL_NVIR = "NorthVirginia"
 
-## Load Balancer
-LB_NAME = "Load Balancer ORMs"
 
-# ********** CONFIGURAÇÕES DO SECURITY GROUP ********** #
-SECURITY_GROUP_NAME_OHIO = "SecurityGroupOhio"
-SECURITY_GROUP_DESCRIPTION_OHIO = "Security Group para a instancia de Ohio"
+# ********** CONFIGURAÇÕES DO LOAD BALANCER E AUTOSCALING GROUP ********** #
+LB_NAME = "LoadBalORM"
+LAUNCH_CONGIG_NAME = "LaunchConORM"
+AUTOSCALING_NAME = "AutoScalORM"
 
-SECURITY_GROUP_NAME_NVIR = "SecurityGroupNVir"
-SECURITY_GROUP_DESCRIPTION_NVIR = "Security Group para a instancia de North Virginia"
+## Tags
+TAG_VAL_LB = "LoadBalProj"
+TAG_VAL_LC = "LaunchCOnfigProj"
+TAG_VAL_ASG = "AutoScalProj"
 
 
 # ********** boto3 CLIENT & RESOURCES ********** #
@@ -50,14 +58,10 @@ client_NVIRGINIA = boto3.client('ec2', region_name=NORTH_VIRGINIA)
 resource_OHIO = boto3.resource('ec2', region_name='us-east-2')
 resource_NVIRGINIA = boto3.resource('ec2', region_name='us-east-1')
 
+client_lb = boto3.client('elb', region_name=NORTH_VIRGINIA)
+client_asg = boto3.client('autoscaling', region_name=NORTH_VIRGINIA)
 
-# client_lb = boto3.client('elbv2', region_name=NORTH_VIRGINIA)
-# hc_NVIR = elb_NVIRGINIA.HealthCheck(
-#         interval=20,
-#         healthy_threshold=3,
-#         unhealthy_threshold=5,
-#         target='HTTP:8080/health'
-#     )
+
 #***************************************************#
 # ******************** FUNÇÕES ******************** #
 #***************************************************#
@@ -72,8 +76,12 @@ def create_key_pair(client, key_dir, key_name):
         print("Escrevendo chave privada em um arquivo")
         with os.fdopen(os.open(key_dir, os.O_WRONLY | os.O_CREAT, 0o400), "w+") as handle:
                 handle.write(private_key)
+
     except ClientError:  
         print("Chave já existe")
+        # print("Chave já existe, deletando para criar uma nova...")
+        # client.delete_key_pair(KeyName=key_name)
+        # create_key_pair(client, key_dir, key_name)
         
 
 
@@ -131,7 +139,8 @@ def create_image(ec2_client, resource_ec2, instance_id, name):
 
 #  Função que cria um Security Group #
 def create_security_group(client_ec2, security_gp_name, description):
-    print("Criando Security Group")
+    
+    print("Criando Security Group\n")
     try:
         response = client_ec2.describe_vpcs()
         vpc_id = response.get('Vpcs', [{}])[0].get('VpcId', '')
@@ -163,9 +172,12 @@ def create_security_group(client_ec2, security_gp_name, description):
                 'ToPort': 5432,
                 'IpRanges': [{'CidrIp': '0.0.0.0/0'}]}
             ])
-        print('Security Group criado com sucesso com as seguintes infotmações:\n%s\n' % data)
+        print(f'Security Group criado com sucesso com as seguintes infotmações:\n{data}\n')
+    
     except ClientError:
-        print("Security Group já existe!")
+        print(f"Security Group {security_gp_name} já existe! Deletando para criar um novo")
+        # client_ec2.delete_security_group(GroupName=security_gp_name)
+        # create_security_group(client_ec2, security_gp_name, description)
 
 
 def get_instance_id_by_tag(client_ec2, tag_val):
@@ -197,18 +209,129 @@ def get_ip_by_id(resource_ec2, instance_id):
             return ip
 
 
-def create_lb(elb_NVIRGINIA, name, security_gp, tag_key, tag_val):
-    subnets = []
-    elb_NVIRGINIA.create_load_balancer(
-        Name=name, 
-        Subnets=subnets,
-        SecurityGroups=[security_gp],
-        Tags=[
-        {   'Key': tag_key,
-            'Value': tag_val}],
-        Type='application'
-        )
+def create_lb(client_ec2, client_lb, name, security_gp, tag_key, tag_val):
+    try:
 
+        response = client_ec2.describe_security_groups(Filters=[
+            {'Name':'group-name', 
+            'Values':[security_gp]}])
+        securitygp_id = response['SecurityGroups'][0]['GroupId']
+        
+        print(f"Security group id: {securitygp_id}")
+        subnets_list = []
+        subnets = client_ec2.describe_subnets()
+        for subnet in subnets['Subnets']:
+            id_subnet = subnet["SubnetId"]
+            subnets_list.append(id_subnet)
+        print(f"Subnets: {subnets_list}")
+
+        lb = client_lb.create_load_balancer(
+            LoadBalancerName=name,
+            Listeners=[{   
+                    'Protocol': 'TCP',
+                    'LoadBalancerPort': 8080,
+                    'InstanceProtocol': 'TCP',
+                    'InstancePort': 8080},{   
+                    'Protocol': 'HTTP',
+                    'LoadBalancerPort': 80,
+                    'InstanceProtocol': 'HTTP',
+                    'InstancePort': 80
+                }],
+                Subnets=subnets_list,
+            # AvailabilityZones=[
+            #     'us-east-1a',
+            #     'us-east-1b',
+            #     'us-east-1c',
+            #     'us-east-1d',
+            #     'us-east-1e'
+            # ],
+            SecurityGroups=[securitygp_id],
+            Tags=[{
+                    'Key': tag_key,
+                    'Value': tag_val
+                }]
+        )
+        
+        dns = lb["DNSName"]
+        print(f"LoadBalancer criado com DNS={dns}")
+        return dns
+    except ClientError as e:
+        print("LoadBalancer já existe!")
+        print(f"\n\n{e}\n\n")
+
+
+def create_launch_configuration(client_ec2, client_asg, name, AMI_name, KeyName, securitygp, instanceType, user_data):
+        try:
+            response = client_ec2.describe_images(
+            Filters=[{
+                    'Name': 'name',
+                    'Values': [AMI_name]
+            }])
+            list_ids=[]
+            for img in response["Images"]:
+                list_ids.append(img["ImageId"])
+            print(f"AMIs disponíveis com essas especificações: {list_ids}")
+            AMI_id=list_ids[0]
+            print(f"AMI a ser utilizada{AMI_id}")
+
+            client_asg.create_launch_configuration(
+                LaunchConfigurationName=name,
+                UserData=user_data,
+                ImageId=AMI_id,
+                KeyName=KeyName,
+                SecurityGroups=[securitygp],        
+                InstanceType=instanceType
+            )
+            print("Launch Configuration criada com sucesso")
+
+        except ClientError as e:
+            print("Launch Configuration já existe")
+            print(f"\n\n{e}\n\n")
+
+def autoscallig_group(client_asg, name, launch_config, tag_key, tag_value, load_balancer):
+    try:
+        client_asg.create_auto_scaling_group(
+            AutoScalingGroupName=name,
+            LaunchConfigurationName=launch_config,       
+            MinSize=1,
+            MaxSize=10,
+            DesiredCapacity=1,
+            AvailabilityZones=[
+                    'us-east-1a',
+                    'us-east-1b',
+                    'us-east-1c',
+                    'us-east-1d',
+                    'us-east-1e'
+            ],
+            LoadBalancerNames=[load_balancer],
+            Tags=[{
+                    'Key': tag_key,
+                    'Value': tag_value
+                }]
+        )
+        print("AutoScaling Group criado com sucesso")
+
+
+    except ClientError as e:
+            print("AutoScaling Group já existe")
+            print(f"\n\n{e}\n\n")
+
+def save_dns_address(dns):
+    if os.path.exists('dns.py'):
+        os.remove('dns.py')
+    with open('dns.py','w') as fout :
+        fout.write(f'dns_address="http://{dns}:8080/admin"')
+
+
+def attach_lb_to_autoscaling(client_asg, autoscal_name, lb_name):
+    try:
+        client_asg.attach_load_balancers(
+            AutoScalingGroupName=autoscal_name,
+            LoadBalancerNames=[lb_name]
+        )
+        print("anexando Load Balancer ao Autoscalling Group")
+    except ClientError as e:
+        print(f"\n\n{e}\n\n")
 
 
 #**************************************************#
@@ -302,14 +425,27 @@ print("Esperando a instância estar rodando...")
 instance.wait_until_running()
 
 
+# ----- Criando AMI e deletando instância ----- #
 # delete_ami_if_exists(client_NVIRGINIA, resource_NVIRGINIA, AMI_NV)
-# create_image(client_NVIRGINIA, resource_NVIRGINIA, instance_NVIRGINIA_id, AMI_NV)
-# terminate_instance(client_NVIRGINIA, resource_NVIRGINIA, instance_NVIRGINIA_id)
+create_image(client_NVIRGINIA, resource_NVIRGINIA, instance_NVIRGINIA_id, AMI_NV)
+terminate_instance(client_NVIRGINIA, resource_NVIRGINIA, instance_NVIRGINIA_id)
 
 
-#### LOAD BALANCER
-# http://boto.cloudhackers.com/en/latest/elb_tut.html
-#https://www.stratoscale.com/knowledge/load-balancing/aws-elb/boto-3-for-elb/example-work-with-a-load-balancer-and-target-group/
+# ----- Criando Load Balancer----- #
+dns=create_lb(client_NVIRGINIA, client_lb, LB_NAME, SECURITY_GROUP_NAME_NVIR, TAG_KEY, TAG_VAL_LB)
+save_dns_address(dns)
+
+# ----- Criando Launch Configuration e AutoScaling Group ----- #
+create_launch_configuration(client_NVIRGINIA, client_asg, LAUNCH_CONGIG_NAME, AMI_NV, KEY_NAME_NV, SECURITY_GROUP_NAME_NVIR, INSTANCE_TYPE, USER_DATA_ORM)
+autoscallig_group(client_asg, AUTOSCALING_NAME, LAUNCH_CONGIG_NAME, TAG_KEY, TAG_VAL_ASG, LB_NAME)
+attach_lb_to_autoscaling(client_asg, AUTOSCALING_NAME, LB_NAME)
+
+
+
+
+
+
+
 
 
 '''
@@ -328,5 +464,13 @@ https://stackoverflow.com/questions/10437026/using-boto-to-determine-if-an-aws-a
  https://newbedev.com/ec2-waiting-until-a-new-instance-is-in-running-state
 https://boto3.amazonaws.com/v1/documentation/api/1.9.42/guide/ec2-example-security-group.html
 https://dashbird.io/blog/boto3-aws-python/
+http://boto.cloudhackers.com/en/latest/elb_tut.html
 '''
 
+
+
+
+
+
+
+# http://LoadBalORM-599824640.us-east-1.elb.amazonaws.com:8080/admin
