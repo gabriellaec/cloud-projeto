@@ -320,7 +320,7 @@ def save_dns_address(dns):
     if os.path.exists('dns.py'):
         os.remove('dns.py')
     with open('dns.py','w') as fout :
-        fout.write(f'dns_address="http://{dns}:8080/admin"')
+        fout.write(f'dns_address="http://{dns}:8080/tasks"')
 
 
 def attach_lb_to_autoscaling(client_asg, autoscal_name, lb_name):
@@ -420,10 +420,11 @@ if old_NV_id:
 
 # ----- Criando instância ----- #
 instance_NVIRGINIA_id = create_instance(client_NVIRGINIA, AMI_UBUNTU_LTS_NVIR, INSTANCE_TYPE, KEY_NAME_NV, USER_DATA_ORM, SECURITY_GROUP_NAME_NVIR, TAG_KEY, TAG_VAL_NVIR)
-instance = resource_NVIRGINIA.Instance(id=instance_NVIRGINIA_id)
+# instance = resource_NVIRGINIA.Instance(id=instance_NVIRGINIA_id)
 print("Esperando a instância estar rodando...")
-instance.wait_until_running()
-
+# instance.wait_until_running()
+waiter_status_ok = client_NVIRGINIA.get_waiter("instance_status_ok")
+waiter_status_ok.wait(InstanceIds=[ instance_NVIRGINIA_id])
 
 # ----- Criando AMI e deletando instância ----- #
 # delete_ami_if_exists(client_NVIRGINIA, resource_NVIRGINIA, AMI_NV)
