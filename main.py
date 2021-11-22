@@ -3,7 +3,7 @@ from boto3.session import Session
 import os
 from botocore.errorfactory import ClientError
 import secrets
-
+import time
 
 ############################################ Precisa mudar o dir
 
@@ -39,7 +39,7 @@ TAG_VAL_NVIR = "NorthVirginia"
 
 # ********** CONFIGURAÇÕES DO LOAD BALANCER E AUTOSCALING GROUP ********** #
 LB_NAME = "LoadBalORM"
-LAUNCH_CONGIG_NAME = "LaunchConORM"
+LAUNCH_CONFIG_NAME = "LaunchConORM"
 AUTOSCALING_NAME = "AutoScalORM"
 
 ## Tags
@@ -73,17 +73,12 @@ def create_key_pair(client, key_dir, key_name):
         key_pair = client.create_key_pair(KeyName=key_name)
         private_key = key_pair["KeyMaterial"]
 
-        print("Escrevendo chave privada em um arquivo")
+        print("Escrevendo chave privada em um arquivo\n")
         with os.fdopen(os.open(key_dir, os.O_WRONLY | os.O_CREAT, 0o400), "w+") as handle:
                 handle.write(private_key)
-
-    except ClientError:  
-        print("Chave já existe")
-        # print("Chave já existe, deletando para criar uma nova...")
-        # client.delete_key_pair(KeyName=key_name)
-        # create_key_pair(client, key_dir, key_name)
+    except ClientError as e:  
+        print(e)
         
-
 
 #  Função que cria uma instância  #
 def create_instance(client, ami, instance_type, key_name, user_data, security_group, tag_key, tag_val):
@@ -119,22 +114,29 @@ def terminate_instance(ec2_client, ec2_resource, instance_id):
 
 
 #  Função que cria uma AMI #
-def create_image(ec2_client, resource_ec2, instance_id, name):
-    try:
-        print(f"Criando imagem {name}...")
-        image = ec2_client.create_image(InstanceId=instance_id, NoReboot=True, Name=name)
-        print(f"\n {image} \n")
-    except ClientError:
+def create_image(ec2_client, instance_id, name):
+    print(f"Criando imagem {name}...")
+    ec2_client.create_image(InstanceId=instance_id, NoReboot=True, Name=name)
+        
+
+def delete_image(ec2_client, resource_ec2, name):
+
+    response = ec2_client.describe_images(Filters=[
+    {'Name': 'name',
+    'Values': [name]
+    }])
+    ami_id=None
+    for image in response['Images']:
+        if image['Name'] == name:
+            ami_id = image['ImageId']
+    if ami_id is not None:
         print(f"Imagem {name} já existe\n")
-        response = ec2_client.describe_images(Filters=[
-        {'Name': 'name',
-         'Values': [name]}])
-        ami_id = response['Images'][0]['ImageId']
         print(f"ID da AMI: {ami_id}")
         print("Deletando imagem...\n")
         ami = list(resource_ec2.images.filter(ImageIds=[ami_id]).all())[0]
-        ami.deregister(DryRun=False)       
-        create_image(ec2_client, resource_ec2, instance_id, name)
+        ami.deregister(DryRun=False) 
+        return
+    print(f"Nenhuma AMI com o nome {name} para ser deletada\n")      
 
 
 #  Função que cria um Security Group #
@@ -172,13 +174,26 @@ def create_security_group(client_ec2, security_gp_name, description):
                 'ToPort': 5432,
                 'IpRanges': [{'CidrIp': '0.0.0.0/0'}]}
             ])
-        print(f'Security Group criado com sucesso com as seguintes infotmações:\n{data}\n')
+        print(f'Security Group {security_gp_name } criado com sucesso!')
     
-    except ClientError:
-        print(f"Security Group {security_gp_name} já existe! Deletando para criar um novo")
-        # client_ec2.delete_security_group(GroupName=security_gp_name)
-        # create_security_group(client_ec2, security_gp_name, description)
+    except ClientError as e:
+        print(e)
 
+
+def delete_security_group(client_ec2, security_gp_name):
+    try:
+        print("Procurando Security Group para deletar...")
+        for sg in client_ec2.describe_security_groups()['SecurityGroups']:
+            if sg['GroupName'] == security_gp_name:
+                print(f"Security Group {security_gp_name} já existe! Deletando para criar um novo")
+                client_ec2.delete_security_group(GroupName=security_gp_name)
+                return
+        print("Nenhum Security Group com este nome encontrado!")
+    except ClientError as e:
+        print(e)
+        print("Tentando deletar novamente")
+        time.sleep(60)
+        delete_security_group(client_ec2, security_gp_name)
 
 def get_instance_id_by_tag(client_ec2, tag_val):
         filter = [
@@ -237,21 +252,13 @@ def create_lb(client_ec2, client_lb, name, security_gp, tag_key, tag_val):
                     'InstanceProtocol': 'HTTP',
                     'InstancePort': 80
                 }],
-                Subnets=subnets_list,
-            # AvailabilityZones=[
-            #     'us-east-1a',
-            #     'us-east-1b',
-            #     'us-east-1c',
-            #     'us-east-1d',
-            #     'us-east-1e'
-            # ],
+            Subnets=subnets_list,
             SecurityGroups=[securitygp_id],
             Tags=[{
                     'Key': tag_key,
                     'Value': tag_val
                 }]
         )
-        
         dns = lb["DNSName"]
         print(f"LoadBalancer criado com DNS={dns}")
         return dns
@@ -288,6 +295,7 @@ def create_launch_configuration(client_ec2, client_asg, name, AMI_name, KeyName,
             print("Launch Configuration já existe")
             print(f"\n\n{e}\n\n")
 
+
 def autoscallig_group(client_asg, name, launch_config, tag_key, tag_value, load_balancer):
     try:
         client_asg.create_auto_scaling_group(
@@ -311,10 +319,10 @@ def autoscallig_group(client_asg, name, launch_config, tag_key, tag_value, load_
         )
         print("AutoScaling Group criado com sucesso")
 
-
     except ClientError as e:
             print("AutoScaling Group já existe")
             print(f"\n\n{e}\n\n")
+
 
 def save_dns_address(dns):
     if os.path.exists('dns.py'):
@@ -334,6 +342,73 @@ def attach_lb_to_autoscaling(client_asg, autoscal_name, lb_name):
         print(f"\n\n{e}\n\n")
 
 
+def delete_lb(client_lb, name):
+    try:
+        lbs = client_lb.describe_load_balancers(
+            LoadBalancerNames=[name]
+        )
+        for lb in lbs['LoadBalancerDescriptions']:
+            print(lb)
+            if lb['LoadBalancerName']==name:
+                print(f"Deletando Load Balancer {name}")
+                client_lb.delete_load_balancer(LoadBalancerName=name)
+                return
+        print("Nenhum Load Balancer com esse nome existe ainda")
+    except ClientError as e:
+        if 'LoadBalancerNotFound' in e.response['Error']['Code']:
+            print("Nenhum Load Balancer com esse nome existe ainda")
+
+
+def delete_autoscalling_group(client_asg, name):
+
+    instance_ids=[]
+    asgs = client_asg.describe_auto_scaling_groups(AutoScalingGroupNames=[name])
+    for asg in asgs['AutoScalingGroups']:
+        if asg['AutoScalingGroupName']==name:
+            for k in asg['Instances']:
+                instance_ids.append(k['InstanceId'])
+            print(f"Deletando AutoScaling Group {name}")
+            client_asg.delete_auto_scaling_group(AutoScalingGroupName=name,ForceDelete=True)
+            return instance_ids
+    print("Nenhum AutoScaling Group existe ainda com esse nome")
+    
+    
+def delete_launch_config(client_asg, name):
+    lcs = client_asg.describe_launch_configurations(LaunchConfigurationNames=[name])
+    
+    for lc in lcs['LaunchConfigurations']:
+        if lc['LaunchConfigurationName']==name:
+            print(f"Deletando Launch Configuration {name}")
+            client_asg.delete_launch_configuration(LaunchConfigurationName=name)
+            return
+    print("Nenhuma Launch Configuration existe ainda com esse nome")
+    
+
+def delete_key_pair(client, key_dir, key_name):
+    try:
+        keys=client.describe_key_pairs(
+            KeyNames=[key_name]
+        )
+        exists=False
+        for key in keys['KeyPairs']:
+            if key['KeyName']==key_name:
+                exists=True
+
+        if exists:
+            print(f"Chave {key_name} já existe, deletando para criar uma nova...")
+            print(f"Deletando arquivo {key_dir}")
+            if os.path.exists(key_dir):
+                os.remove(key_dir)
+            if not os.path.exists(key_dir):
+                print("Arquivo deletado com sucesso!")
+            client.delete_key_pair(KeyName=key_name)
+            print("chave deletada com sucesso!\n")
+    except ClientError as e:
+        print(e.response['Error']['Code'])
+        if 'InvalidKeyPair.NotFound' in e.response['Error']['Code']:
+            print("Nenhuma chave com este nome para deletar\n")
+            
+
 #**************************************************#
 # ******************** SCRIPT ******************** #
 #**************************************************#
@@ -342,16 +417,72 @@ print("----------------------------------------")
 print("---------- COMEÇANDO O SCRIPT ----------")
 print("----------------------------------------")
 print()
-print("----------------- OHIO -----------------")
 
+print("* APAGANDO COISAS ANTERIORES")
+
+# ----- Apagando LOAD BALANCER, AUTOSCALING GROUP E LAUNCH CONFIGURATION se já existem ----- #
+instance_ids_list = delete_autoscalling_group(client_asg, AUTOSCALING_NAME)
+delete_launch_config(client_asg, LAUNCH_CONFIG_NAME)
+delete_lb(client_lb, LB_NAME)
+
+# ----- Apagando instância de OHIO se já existe ----- #
+print("Deletando instâncias antigas existentes em OHIO...\n")
+old_ohio_id = get_instance_id_by_tag(client_OHIO, TAG_VAL_OHIO)
+print(f"ID da instância antiga: {old_ohio_id}\n")
+if old_ohio_id:
+    for inst_id in old_ohio_id:
+        terminate_instance(client_OHIO, resource_OHIO, inst_id)
+  
+# ----- Apagando instância de NORTH VIRGINIA se já existe ----- #
+print("Deletando instâncias antigas existentes...\n")
+old_NV_id = get_instance_id_by_tag(client_NVIRGINIA, TAG_VAL_NVIR)
+print(f"ID da instância antiga: {old_NV_id}\n")
+if old_NV_id:
+    for inst_id in old_NV_id:
+        terminate_instance(client_NVIRGINIA, resource_NVIRGINIA, inst_id)
+
+delete_image(client_NVIRGINIA, resource_NVIRGINIA, AMI_NV)
+
+# ----- Esperando até tudo estar terminated ----- #
+print("Esperando as instâncias serem deletadas...")
+if old_ohio_id:
+    waiter_terminated = client_OHIO.get_waiter('instance_terminated')
+    for inst_id in old_ohio_id:
+        waiter_terminated.wait(InstanceIds=[inst_id])
+
+if old_NV_id:
+    waiter_terminated = client_NVIRGINIA.get_waiter('instance_terminated')
+    for inst_id in old_NV_id:
+        waiter_terminated.wait(InstanceIds=[inst_id])
+
+print("\n*&***************")
+print(instance_ids_list)
+if instance_ids_list:
+    waiter_terminated = client_NVIRGINIA.get_waiter('instance_terminated')
+    for inst_id in instance_ids_list:
+        waiter_terminated.wait(InstanceIds=[inst_id])
+
+
+
+# ----- Apagando KEY PAIRS ----- #
+delete_key_pair(client_OHIO, KEY_DIR, KEY_NAME)
+delete_key_pair(client_NVIRGINIA, KEY_DIR_NV, KEY_NAME_NV)
+
+# ----- Apagando SECURITY GROUPS ----- #
+delete_security_group(client_OHIO, SECURITY_GROUP_NAME_OHIO)
+delete_security_group(client_NVIRGINIA, SECURITY_GROUP_NAME_NVIR)
+
+
+
+# --------------- Instância de OHIO --------------- #
+print("----------------- OHIO -----------------")
+print()
 print("* CRIANDO UM KEY PAIR PARA OHIO")
 create_key_pair(client_OHIO, KEY_DIR, KEY_NAME)
 print()
-
 print("* CRIANDO UM SECURITY GROUP PARA OHIO")
 create_security_group(client_OHIO, SECURITY_GROUP_NAME_OHIO, SECURITY_GROUP_DESCRIPTION_OHIO)
 print()
-
 print("* INSTÂNCIA DE OHIO")
 
 # --------------- UserData OHIO --------------- #
@@ -366,27 +497,19 @@ sudo ufw allow 5432/tcp
 sudo systemctl restart postgresql 
 '''
 
-# ----- Apagando instância se já existe ----- #
-print("Deletando instâncias antigas existentes...\n")
-old_ohio_id = get_instance_id_by_tag(client_OHIO, TAG_VAL_OHIO)
-print(f"ID da instância antiga: {old_ohio_id}")
-if old_ohio_id:
-    for inst_id in old_ohio_id:
-        terminate_instance(client_OHIO, resource_OHIO, inst_id)
-
 # ----- Criando instância ----- #
-print("Criando instância de OHIO...\n")
+print("Criando instância de OHIO...")
 instance_OHIO_id = create_instance(client_OHIO, AMI_UBUNTU_LTS_OHIO, INSTANCE_TYPE, KEY_NAME, USER_DATA_POSTGRES, SECURITY_GROUP_NAME_OHIO, TAG_KEY, TAG_VAL_OHIO)
 
 instance = resource_OHIO.Instance(id=instance_OHIO_id)
-print("Esperando a instância estar rodando...")
+print("Esperando a instância estar rodando...\n")
 instance.wait_until_running()
 
 
 # --------------- Instância de NORTH VIRGINIA --------------- #
-print()
-print("------------- NORTH VIRGINIA -------------")
-print()
+print("------------- NORTH VIRGINIA -------------\n")
+
+print("* INSTÂNCIA DE NORTH VIRGINIA\n")
 print("* CRIANDO UM KEY PAIR PARA NORTH VIRGINIA")
 create_key_pair(client_NVIRGINIA, KEY_DIR_NV, KEY_NAME_NV)
 
@@ -409,15 +532,6 @@ cd tasks
 sudo reboot
         '''
 
-# ----- Apagando instância se já existe ----- #
-print("* INSTÂNCIA DE NORTH VIRGINIA")
-print("Deletando instâncias antigas existentes...\n")
-old_NV_id = get_instance_id_by_tag(client_NVIRGINIA, TAG_VAL_NVIR)
-print(f"ID da instância antiga: {old_NV_id}")
-if old_NV_id:
-    for inst_id in old_NV_id:
-        terminate_instance(client_NVIRGINIA, resource_NVIRGINIA, inst_id)
-
 # ----- Criando instância ----- #
 instance_NVIRGINIA_id = create_instance(client_NVIRGINIA, AMI_UBUNTU_LTS_NVIR, INSTANCE_TYPE, KEY_NAME_NV, USER_DATA_ORM, SECURITY_GROUP_NAME_NVIR, TAG_KEY, TAG_VAL_NVIR)
 # instance = resource_NVIRGINIA.Instance(id=instance_NVIRGINIA_id)
@@ -428,19 +542,21 @@ waiter_status_ok.wait(InstanceIds=[ instance_NVIRGINIA_id])
 
 # ----- Criando AMI e deletando instância ----- #
 # delete_ami_if_exists(client_NVIRGINIA, resource_NVIRGINIA, AMI_NV)
-create_image(client_NVIRGINIA, resource_NVIRGINIA, instance_NVIRGINIA_id, AMI_NV)
+create_image(client_NVIRGINIA, instance_NVIRGINIA_id, AMI_NV)
 terminate_instance(client_NVIRGINIA, resource_NVIRGINIA, instance_NVIRGINIA_id)
-
 
 # ----- Criando Load Balancer----- #
 dns=create_lb(client_NVIRGINIA, client_lb, LB_NAME, SECURITY_GROUP_NAME_NVIR, TAG_KEY, TAG_VAL_LB)
 save_dns_address(dns)
 
 # ----- Criando Launch Configuration e AutoScaling Group ----- #
-create_launch_configuration(client_NVIRGINIA, client_asg, LAUNCH_CONGIG_NAME, AMI_NV, KEY_NAME_NV, SECURITY_GROUP_NAME_NVIR, INSTANCE_TYPE, USER_DATA_ORM)
-autoscallig_group(client_asg, AUTOSCALING_NAME, LAUNCH_CONGIG_NAME, TAG_KEY, TAG_VAL_ASG, LB_NAME)
+create_launch_configuration(client_NVIRGINIA, client_asg, LAUNCH_CONFIG_NAME, AMI_NV, KEY_NAME_NV, SECURITY_GROUP_NAME_NVIR, INSTANCE_TYPE, USER_DATA_ORM)
+autoscallig_group(client_asg, AUTOSCALING_NAME, LAUNCH_CONFIG_NAME, TAG_KEY, TAG_VAL_ASG, LB_NAME)
 attach_lb_to_autoscaling(client_asg, AUTOSCALING_NAME, LB_NAME)
 
+print("\n\n  ------------- FIM DO SCRIPT -------------\n")
+print("\n Espere até pelo menos uma instância do AutoScaling Group estar rodando para testar o Client")
+print("------------------------------------------------")
 
 
 
@@ -466,12 +582,14 @@ https://stackoverflow.com/questions/10437026/using-boto-to-determine-if-an-aws-a
 https://boto3.amazonaws.com/v1/documentation/api/1.9.42/guide/ec2-example-security-group.html
 https://dashbird.io/blog/boto3-aws-python/
 http://boto.cloudhackers.com/en/latest/elb_tut.html
+https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/elb.html
+https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/autoscaling.html
 '''
 
 
+# LOGS
+# https://operatingops.com/2019/02/20/python-boto3-logging/
+# https://gist.github.com/olegdulin/fd18906343d75142a487b9a9da9042e0
 
-
-
-
-
-# http://LoadBalORM-599824640.us-east-1.elb.amazonaws.com:8080/admin
+# VPN
+# https://pypi.org/project/openvpn-api/
