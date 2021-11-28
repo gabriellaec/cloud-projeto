@@ -4,6 +4,16 @@ import os
 from botocore.errorfactory import ClientError
 import secrets
 import time
+import logging
+
+
+##################### lOGS #####################
+open('proj_logs.txt', 'w').close()
+logging.basicConfig(format='%(asctime)s %(message)s',
+    datefmt='%d-%m-%Y:%H:%M:%S',
+    level=logging.INFO,
+    filename='proj_logs.txt')
+logger = logging.getLogger('my_app')
 
 ############################################ Precisa mudar o dir
 
@@ -350,7 +360,6 @@ def delete_lb(client_lb, name):
             LoadBalancerNames=[name]
         )
         for lb in lbs['LoadBalancerDescriptions']:
-            print(lb)
             if lb['LoadBalancerName']==name:
                 print(f"Deletando Load Balancer {name}")
                 client_lb.delete_load_balancer(LoadBalancerName=name)
@@ -416,13 +425,20 @@ def attach_policy_to_autoscaling(client_asg, asg_name, policy_name):
         client_asg.put_scaling_policy(
             AutoScalingGroupName=asg_name,
             PolicyName=policy_name,
-            PolicyType='SimpleScaling',
-            AdjustmentType='ChangeInCapacity',
-            ScalingAdjustment=1,
+            PolicyType='TargetTrackingScaling',
+            TargetTrackingConfiguration={
+                'PredefinedMetricSpecification': {
+                    'PredefinedMetricType': 'ASGAverageCPUUtilization'
+                },
+                'TargetValue': 25.0,
+                # 'DisableScaleIn': True
+            },
+            Enabled=True
         )
         print("Policy vinculada ao autoscaling group com sucesso!\n")
     except ClientError as e:
         print(e)
+
 #**************************************************#
 # ******************** SCRIPT ******************** #
 #**************************************************#
@@ -431,13 +447,16 @@ print("----------------------------------------")
 print("---------- COMEÇANDO O SCRIPT ----------")
 print("----------------------------------------")
 print()
+logger.info('***** COMEÇO DO SCRIPT DE IMPLEMENTAÇÃO *****')
 
 print("* APAGANDO COISAS ANTERIORES")
 
+logger.info('Apagando LOAD BALANCER, AUTOSCALING GROUP E LAUNCH CONFIGURATION se já existem')
 # ----- Apagando LOAD BALANCER, AUTOSCALING GROUP E LAUNCH CONFIGURATION se já existem ----- #
 instance_ids_list = delete_autoscalling_group(client_asg, AUTOSCALING_NAME)
 delete_launch_config(client_asg, LAUNCH_CONFIG_NAME)
 delete_lb(client_lb, LB_NAME)
+
 
 # ----- Apagando instância de OHIO se já existe ----- #
 print("Deletando instâncias antigas existentes em OHIO...\n")
@@ -446,7 +465,8 @@ print(f"ID da instância antiga: {old_ohio_id}\n")
 if old_ohio_id:
     for inst_id in old_ohio_id:
         terminate_instance(client_OHIO, resource_OHIO, inst_id)
-  
+        logger.info('Apagando instância de OHIO')
+
 # ----- Apagando instância de NORTH VIRGINIA se já existe ----- #
 print("Deletando instâncias antigas existentes...\n")
 old_NV_id = get_instance_id_by_tag(client_NVIRGINIA, TAG_VAL_NVIR)
@@ -454,6 +474,7 @@ print(f"ID da instância antiga: {old_NV_id}\n")
 if old_NV_id:
     for inst_id in old_NV_id:
         terminate_instance(client_NVIRGINIA, resource_NVIRGINIA, inst_id)
+        logger.info('Apagando instância de NORTH VIRGINIA')
 
 delete_image(client_NVIRGINIA, resource_NVIRGINIA, AMI_NV)
 
@@ -476,15 +497,18 @@ if instance_ids_list:
     for inst_id in instance_ids_list:
         waiter_terminated.wait(InstanceIds=[inst_id])
 
+logger.info('Instâncias deletadas')
 
 
 # ----- Apagando KEY PAIRS ----- #
 delete_key_pair(client_OHIO, KEY_DIR, KEY_NAME)
 delete_key_pair(client_NVIRGINIA, KEY_DIR_NV, KEY_NAME_NV)
+logger.info('Key pairs deletados')
 
 # ----- Apagando SECURITY GROUPS ----- #
 delete_security_group(client_OHIO, SECURITY_GROUP_NAME_OHIO)
 delete_security_group(client_NVIRGINIA, SECURITY_GROUP_NAME_NVIR)
+logger.info('Security Groups deletados')
 
 
 
@@ -492,9 +516,11 @@ delete_security_group(client_NVIRGINIA, SECURITY_GROUP_NAME_NVIR)
 print("----------------- OHIO -----------------")
 print()
 print("* CRIANDO UM KEY PAIR PARA OHIO")
+logger.info('CRIANDO UM KEY PAIR PARA OHIO')
 create_key_pair(client_OHIO, KEY_DIR, KEY_NAME)
 print()
 print("* CRIANDO UM SECURITY GROUP PARA OHIO")
+logger.info('CRIANDO UM SECURITY GROUP PARA OHIO')
 create_security_group(client_OHIO, SECURITY_GROUP_NAME_OHIO, SECURITY_GROUP_DESCRIPTION_OHIO)
 print()
 print("* INSTÂNCIA DE OHIO")
@@ -513,6 +539,8 @@ sudo systemctl restart postgresql
 
 # ----- Criando instância ----- #
 print("Criando instância de OHIO...")
+logger.info('Criando instância de OHIO (postgres)')
+
 instance_OHIO_id = create_instance(client_OHIO, AMI_UBUNTU_LTS_OHIO, INSTANCE_TYPE, KEY_NAME, USER_DATA_POSTGRES, SECURITY_GROUP_NAME_OHIO, TAG_KEY, TAG_VAL_OHIO)
 
 instance = resource_OHIO.Instance(id=instance_OHIO_id)
@@ -525,10 +553,12 @@ print("------------- NORTH VIRGINIA -------------\n")
 
 print("* INSTÂNCIA DE NORTH VIRGINIA\n")
 print("* CRIANDO UM KEY PAIR PARA NORTH VIRGINIA")
+logger.info('CRIANDO UM KEY PAIR PARA NORTH VIRGINIA')
 create_key_pair(client_NVIRGINIA, KEY_DIR_NV, KEY_NAME_NV)
 
 
 print("* CRIANDO UM SECURITY GROUP PARA NORTH VIRGINIA")
+logger.info('CRIANDO UM SECURITY GROUP PARA NORTH VIRGINI')
 create_security_group(client_NVIRGINIA, SECURITY_GROUP_NAME_NVIR, SECURITY_GROUP_DESCRIPTION_NVIR)
 print()
 
@@ -553,20 +583,29 @@ print("Esperando a instância estar rodando...")
 waiter_status_ok = client_NVIRGINIA.get_waiter("instance_status_ok")
 waiter_status_ok.wait(InstanceIds=[ instance_NVIRGINIA_id])
 
+logger.info('CRIANDO INSTÂNCIA PARA NORTH VIRGINIA (Django ORM)')
 # ----- Criando AMI e deletando instância ----- #
 create_image(client_NVIRGINIA, instance_NVIRGINIA_id, AMI_NV)
+logger.info('CRIANDO AMI DA INSTÂNCIA DE NORTH VIRGINIA')
+
 terminate_instance(client_NVIRGINIA, resource_NVIRGINIA, instance_NVIRGINIA_id)
+logger.info('DELETANDO INSTÂNCIA ORIGINAL DE NORTH VIRGINIA')
 
 # ----- Criando Load Balancer----- #
 dns=create_lb(client_NVIRGINIA, client_lb, LB_NAME, SECURITY_GROUP_NAME_NVIR, TAG_KEY, TAG_VAL_LB)
 save_dns_address(dns)
+logger.info('CRIANDO LOAD BALANCER')
 
 # ----- Criando Launch Configuration e AutoScaling Group ----- #
 create_launch_configuration(client_NVIRGINIA, client_asg, LAUNCH_CONFIG_NAME, AMI_NV, KEY_NAME_NV, SECURITY_GROUP_NAME_NVIR, INSTANCE_TYPE, USER_DATA_ORM)
+logger.info('CRIANDO LOAD LAUNCH CONFIGURATION')
 autoscallig_group(client_asg, AUTOSCALING_NAME, LAUNCH_CONFIG_NAME, TAG_KEY, TAG_VAL_ASG, LB_NAME)
+logger.info('CRIANDO AUTOSCALING GROUP')
 attach_lb_to_autoscaling(client_asg, AUTOSCALING_NAME, LB_NAME)
 attach_policy_to_autoscaling(client_asg, AUTOSCALING_NAME, POLICY_NAME)
+logger.info('ADICIONANDO POLICY AO ASG')
 
+logger.info('***** FIM DO SCRIPT DE IMPLEMENTAÇÃO *****')
 
 print("\n\n   ----------------------- FIM DO SCRIPT -----------------------\n")
 print("Espere até pelo menos uma instância do AutoScaling Group estar rodando para testar o Client\n")

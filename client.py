@@ -3,12 +3,22 @@ from requests.exceptions import HTTPError
 from datetime import datetime
 import json
 import dns
+import logging
+
+logging.basicConfig(format='%(asctime)s %(message)s',
+    datefmt='%d-%m-%Y:%H:%M:%S',
+    level=logging.INFO,
+    filename='proj_logs.txt')
+logger = logging.getLogger('my_app')
 
 URL_POST = f'{dns.dns_address}/new_task/'
 URL_GET = f'{dns.dns_address}/tasks/'
 
 
 method = input("Digite GET ou POST: ")
+
+
+
 # --------------------------- GET --------------------------- #
 if method=='GET':
     print(URL_GET)
@@ -17,6 +27,8 @@ if method=='GET':
         response.raise_for_status()
         print('Success!')
         print(response.text)
+
+        logger.info(f"GET - response = {response.text}")
     except HTTPError as http_err:
             print(f'HTTP error occurred: {http_err}')
 
@@ -38,6 +50,8 @@ else:
         response.raise_for_status()
         print('Success!')
         print(response.text)
+        logger.info(f"POST - info = {response.text}")
+
     except HTTPError as http_err:
             print(f'HTTP error occurred: {http_err}')
 
