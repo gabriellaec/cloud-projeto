@@ -41,6 +41,7 @@ TAG_VAL_NVIR = "NorthVirginia"
 LB_NAME = "LoadBalORM"
 LAUNCH_CONFIG_NAME = "LaunchConORM"
 AUTOSCALING_NAME = "AutoScalORM"
+POLICY_NAME = "PolicyASG"
 
 ## Tags
 TAG_VAL_LB = "LoadBalProj"
@@ -115,9 +116,11 @@ def terminate_instance(ec2_client, ec2_resource, instance_id):
 
 #  Função que cria uma AMI #
 def create_image(ec2_client, instance_id, name):
-    print(f"Criando imagem {name}...")
-    ec2_client.create_image(InstanceId=instance_id, NoReboot=True, Name=name)
-        
+    try:
+        print(f"Criando imagem {name}...")
+        ec2_client.create_image(InstanceId=instance_id, NoReboot=True, Name=name)
+    except ClientError as e:
+        print(e)
 
 def delete_image(ec2_client, resource_ec2, name):
 
@@ -190,8 +193,7 @@ def delete_security_group(client_ec2, security_gp_name):
                 return
         print("Nenhum Security Group com este nome encontrado!")
     except ClientError as e:
-        print(e)
-        print("Tentando deletar novamente")
+        print("Esperando instâncias 'Available' serem deletadas...")
         time.sleep(60)
         delete_security_group(client_ec2, security_gp_name)
 
@@ -303,7 +305,7 @@ def autoscallig_group(client_asg, name, launch_config, tag_key, tag_value, load_
             LaunchConfigurationName=launch_config,       
             MinSize=1,
             MaxSize=10,
-            DesiredCapacity=1,
+            DesiredCapacity=2,
             AvailabilityZones=[
                     'us-east-1a',
                     'us-east-1b',
@@ -409,6 +411,18 @@ def delete_key_pair(client, key_dir, key_name):
             print("Nenhuma chave com este nome para deletar\n")
             
 
+def attach_policy_to_autoscaling(client_asg, asg_name, policy_name):
+    try:
+        client_asg.put_scaling_policy(
+            AutoScalingGroupName=asg_name,
+            PolicyName=policy_name,
+            PolicyType='SimpleScaling',
+            AdjustmentType='ChangeInCapacity',
+            ScalingAdjustment=1,
+        )
+        print("Policy vinculada ao autoscaling group com sucesso!\n")
+    except ClientError as e:
+        print(e)
 #**************************************************#
 # ******************** SCRIPT ******************** #
 #**************************************************#
@@ -534,14 +548,12 @@ sudo reboot
 
 # ----- Criando instância ----- #
 instance_NVIRGINIA_id = create_instance(client_NVIRGINIA, AMI_UBUNTU_LTS_NVIR, INSTANCE_TYPE, KEY_NAME_NV, USER_DATA_ORM, SECURITY_GROUP_NAME_NVIR, TAG_KEY, TAG_VAL_NVIR)
-# instance = resource_NVIRGINIA.Instance(id=instance_NVIRGINIA_id)
+instance = resource_NVIRGINIA.Instance(id=instance_NVIRGINIA_id)
 print("Esperando a instância estar rodando...")
-# instance.wait_until_running()
 waiter_status_ok = client_NVIRGINIA.get_waiter("instance_status_ok")
 waiter_status_ok.wait(InstanceIds=[ instance_NVIRGINIA_id])
 
 # ----- Criando AMI e deletando instância ----- #
-# delete_ami_if_exists(client_NVIRGINIA, resource_NVIRGINIA, AMI_NV)
 create_image(client_NVIRGINIA, instance_NVIRGINIA_id, AMI_NV)
 terminate_instance(client_NVIRGINIA, resource_NVIRGINIA, instance_NVIRGINIA_id)
 
@@ -553,12 +565,12 @@ save_dns_address(dns)
 create_launch_configuration(client_NVIRGINIA, client_asg, LAUNCH_CONFIG_NAME, AMI_NV, KEY_NAME_NV, SECURITY_GROUP_NAME_NVIR, INSTANCE_TYPE, USER_DATA_ORM)
 autoscallig_group(client_asg, AUTOSCALING_NAME, LAUNCH_CONFIG_NAME, TAG_KEY, TAG_VAL_ASG, LB_NAME)
 attach_lb_to_autoscaling(client_asg, AUTOSCALING_NAME, LB_NAME)
-
-print("\n\n  ------------- FIM DO SCRIPT -------------\n")
-print("\n Espere até pelo menos uma instância do AutoScaling Group estar rodando para testar o Client")
-print("------------------------------------------------")
+attach_policy_to_autoscaling(client_asg, AUTOSCALING_NAME, POLICY_NAME)
 
 
+print("\n\n   ----------------------- FIM DO SCRIPT -----------------------\n")
+print("Espere até pelo menos uma instância do AutoScaling Group estar rodando para testar o Client\n")
+print("--------------------------------------------------------------------")
 
 
 
