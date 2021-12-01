@@ -13,7 +13,7 @@ aws_secret_access_key = YOUR_SECRET_KEY
 region=us-east-1
 
 
-**Criar um arquivo psql_secrets.py com suas credenciais do banco de dados:**
+**Criar um arquivo secrets.py com suas credenciais do banco de dados:**
 
 username="..."
 
