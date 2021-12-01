@@ -1,1 +1,1 @@
-dns_address="http://LoadBalORM-1166795340.us-east-1.elb.amazonaws.com:8080/tasks"
+dns_address="http://LoadBalORM-670931374.us-east-1.elb.amazonaws.com/tasks"

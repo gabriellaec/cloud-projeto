@@ -11,19 +11,18 @@ logging.basicConfig(format='%(asctime)s %(message)s',
     filename='proj_logs.txt')
 logger = logging.getLogger('my_app')
 
-URL_POST = f'{dns.dns_address}/new_task/'
-URL_GET = f'{dns.dns_address}/tasks/'
+URL = f'{dns.dns_address}/tasks/'
 
 
-method = input("Digite GET ou POST: ")
+method = input("Digite GET, POST ou DELETE: ")
 
 
 
 # --------------------------- GET --------------------------- #
-if method=='GET':
-    print(URL_GET)
+if method=='GET' or method=='get':
+    print(URL)
     try:
-        response =requests.get(URL_GET)
+        response =requests.get(URL)
         response.raise_for_status()
         print('Success!')
         print(response.text)
@@ -33,8 +32,8 @@ if method=='GET':
             print(f'HTTP error occurred: {http_err}')
 
 # --------------------------- POST --------------------------- #
-else:
-    print(URL_POST)
+elif method=='POST' or method=='post':
+    print(URL)
     try:
         title = input("Título da tarefa: ")
         description = input("Descrição: ")
@@ -46,7 +45,7 @@ else:
         print(obj)
         json_obj = json.dumps(obj)
         print(json_obj)
-        response =requests.post(URL_POST, json_obj)
+        response =requests.post(URL, json_obj)
         response.raise_for_status()
         print('Success!')
         print(response.text)
@@ -54,6 +53,18 @@ else:
 
     except HTTPError as http_err:
             print(f'HTTP error occurred: {http_err}')
+        
+elif method=='DELETE' or method=='delete':
+    print(URL)
+    try:
+        response =requests.delete(URL)
+        response.raise_for_status()
+        print('Success on deleting!')
+        print(response.text)
+        logger.info(f"DELETE - response = {response.text}")
+    except HTTPError as http_err:
+            print(f'HTTP error occurred: {http_err}')
+
 
 
 # Fontes:
